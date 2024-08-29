@@ -1,5 +1,5 @@
 import ReactDOM from "react-dom";
-import ExcalidrawApp from "../excalidraw-app";
+import { Excalidraw } from "../packages/excalidraw/index";
 import { render } from "../tests/test-utils";
 import { Keyboard, Pointer, UI } from "../tests/helpers/ui";
 import { KEYS } from "../keys";
@@ -15,7 +15,7 @@ const h = window.h;
 
 describe("element locking", () => {
   beforeEach(async () => {
-    await render(<ExcalidrawApp />);
+    await render(<Excalidraw handleKeyboardGlobally={true} />);
     h.elements = [];
   });
 
@@ -152,7 +152,7 @@ describe("element locking", () => {
     expect(contextMenu).not.toBeNull();
     expect(
       contextMenu?.querySelector(
-        `li[data-testid="toggleLock"] .context-menu-option__label`,
+        `li[data-testid="toggleElementLock"] .context-menu-item__label`,
       ),
     ).toHaveTextContent(t("labels.elementLock.unlock"));
   });
@@ -232,7 +232,7 @@ describe("element locking", () => {
     API.setSelectedElements([container]);
     Keyboard.keyPress(KEYS.ENTER);
     expect(h.state.editingElement?.id).not.toBe(text.id);
-    expect(h.state.editingElement?.id).toBe(h.elements[2].id);
+    expect(h.state.editingElement?.id).toBe(h.elements[1].id);
   });
 
   it("should ignore locked text under cursor when clicked with text tool", () => {

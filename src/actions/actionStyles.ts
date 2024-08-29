@@ -12,9 +12,19 @@ import {
   DEFAULT_FONT_FAMILY,
   DEFAULT_TEXT_ALIGN,
 } from "../constants";
-import { getBoundTextElement } from "../element/textElement";
-import { hasBoundTextElement } from "../element/typeChecks";
+import {
+  getBoundTextElement,
+  getDefaultLineHeight,
+} from "../element/textElement";
+import {
+  hasBoundTextElement,
+  canApplyRoundnessTypeToElement,
+  getDefaultRoundnessTypeForElement,
+  isFrameElement,
+  isArrowElement,
+} from "../element/typeChecks";
 import { getSelectedElements } from "../scene";
+import { ExcalidrawTextElement } from "../element/types";
 
 // `copiedStyles` is exported only for tests.
 export let copiedStyles: string = "{}";
@@ -57,7 +67,9 @@ export const actionPasteStyles = register({
       return { elements, commitToHistory: false };
     }
 
-    const selectedElements = getSelectedElements(elements, appState, true);
+    const selectedElements = getSelectedElements(elements, appState, {
+      includeBoundTextElement: true,
+    });
     const selectedElementIds = selectedElements.map((element) => element.id);
     return {
       elements: elements.map((element) => {
@@ -77,15 +89,32 @@ export const actionPasteStyles = register({
             fillStyle: elementStylesToCopyFrom?.fillStyle,
             opacity: elementStylesToCopyFrom?.opacity,
             roughness: elementStylesToCopyFrom?.roughness,
+            roundness: elementStylesToCopyFrom.roundness
+              ? canApplyRoundnessTypeToElement(
+                  elementStylesToCopyFrom.roundness.type,
+                  element,
+                )
+                ? elementStylesToCopyFrom.roundness
+                : getDefaultRoundnessTypeForElement(element)
+              : null,
           });
 
           if (isTextElement(newElement)) {
+            const fontSize =
+              (elementStylesToCopyFrom as ExcalidrawTextElement).fontSize ||
+              DEFAULT_FONT_SIZE;
+            const fontFamily =
+              (elementStylesToCopyFrom as ExcalidrawTextElement).fontFamily ||
+              DEFAULT_FONT_FAMILY;
             newElement = newElementWith(newElement, {
-              fontSize: elementStylesToCopyFrom?.fontSize || DEFAULT_FONT_SIZE,
-              fontFamily:
-                elementStylesToCopyFrom?.fontFamily || DEFAULT_FONT_FAMILY,
+              fontSize,
+              fontFamily,
               textAlign:
-                elementStylesToCopyFrom?.textAlign || DEFAULT_TEXT_ALIGN,
+                (elementStylesToCopyFrom as ExcalidrawTextElement).textAlign ||
+                DEFAULT_TEXT_ALIGN,
+              lineHeight:
+                (elementStylesToCopyFrom as ExcalidrawTextElement).lineHeight ||
+                getDefaultLineHeight(fontFamily),
             });
             let container = null;
             if (newElement.containerId) {
@@ -99,10 +128,20 @@ export const actionPasteStyles = register({
             redrawTextBoundingBox(newElement, container);
           }
 
-          if (newElement.type === "arrow") {
+          if (
+            newElement.type === "arrow" &&
+            isArrowElement(elementStylesToCopyFrom)
+          ) {
             newElement = newElementWith(newElement, {
               startArrowhead: elementStylesToCopyFrom.startArrowhead,
               endArrowhead: elementStylesToCopyFrom.endArrowhead,
+            });
+          }
+
+          if (isFrameElement(element)) {
+            newElement = newElementWith(newElement, {
+              roundness: null,
+              backgroundColor: "transparent",
             });
           }
 

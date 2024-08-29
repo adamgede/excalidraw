@@ -1,43 +1,57 @@
-import { AppState } from "../../src/types";
+import { AppState, Primitive } from "../../src/types";
+import {
+  DEFAULT_ELEMENT_BACKGROUND_COLOR_PALETTE,
+  DEFAULT_ELEMENT_BACKGROUND_PICKS,
+  DEFAULT_ELEMENT_STROKE_COLOR_PALETTE,
+  DEFAULT_ELEMENT_STROKE_PICKS,
+} from "../colors";
+import { trackEvent } from "../analytics";
 import { ButtonIconSelect } from "../components/ButtonIconSelect";
-import { ColorPicker } from "../components/ColorPicker";
+import { ColorPicker } from "../components/ColorPicker/ColorPicker";
 import { IconPicker } from "../components/IconPicker";
+// TODO barnabasmolnar/editor-redesign
+// TextAlignTopIcon, TextAlignBottomIcon,TextAlignMiddleIcon,
+// ArrowHead icons
 import {
   ArrowheadArrowIcon,
   ArrowheadBarIcon,
   ArrowheadDotIcon,
   ArrowheadTriangleIcon,
   ArrowheadNoneIcon,
-  EdgeRoundIcon,
-  EdgeSharpIcon,
-  FillCrossHatchIcon,
-  FillHachureIcon,
-  FillSolidIcon,
-  FontFamilyCodeIcon,
-  FontFamilyHandDrawnIcon,
-  FontFamilyNormalIcon,
-  FontSizeExtraLargeIcon,
-  FontSizeLargeIcon,
-  FontSizeMediumIcon,
-  FontSizeSmallIcon,
-  SloppinessArchitectIcon,
-  SloppinessArtistIcon,
-  SloppinessCartoonistIcon,
   StrokeStyleDashedIcon,
   StrokeStyleDottedIcon,
-  StrokeStyleSolidIcon,
-  StrokeWidthIcon,
-  TextAlignCenterIcon,
-  TextAlignLeftIcon,
-  TextAlignRightIcon,
   TextAlignTopIcon,
   TextAlignBottomIcon,
   TextAlignMiddleIcon,
+  FillHachureIcon,
+  FillCrossHatchIcon,
+  FillSolidIcon,
+  SloppinessArchitectIcon,
+  SloppinessArtistIcon,
+  SloppinessCartoonistIcon,
+  StrokeWidthBaseIcon,
+  StrokeWidthBoldIcon,
+  StrokeWidthExtraBoldIcon,
+  FontSizeSmallIcon,
+  FontSizeMediumIcon,
+  FontSizeLargeIcon,
+  FontSizeExtraLargeIcon,
+  EdgeSharpIcon,
+  EdgeRoundIcon,
+  FreedrawIcon,
+  FontFamilyNormalIcon,
+  FontFamilyCodeIcon,
+  TextAlignLeftIcon,
+  TextAlignCenterIcon,
+  TextAlignRightIcon,
+  FillZigZagIcon,
 } from "../components/icons";
 import {
   DEFAULT_FONT_FAMILY,
   DEFAULT_FONT_SIZE,
   FONT_FAMILY,
+  ROUNDNESS,
+  STROKE_WIDTH,
   VERTICAL_ALIGN,
 } from "../constants";
 import {
@@ -49,11 +63,12 @@ import { mutateElement, newElementWith } from "../element/mutateElement";
 import {
   getBoundTextElement,
   getContainerElement,
+  getDefaultLineHeight,
 } from "../element/textElement";
 import {
   isBoundToContainer,
   isLinearElement,
-  isLinearElementType,
+  isUsingAdaptiveRadius,
 } from "../element/typeChecks";
 import {
   Arrowhead,
@@ -68,7 +83,6 @@ import { getLanguage, t } from "../i18n";
 import { KEYS } from "../keys";
 import { randomInteger } from "../random";
 import {
-  canChangeSharpness,
   canHaveArrowheads,
   getCommonAttributeOfSelectedElements,
   getSelectedElements,
@@ -76,20 +90,23 @@ import {
   isSomeElementSelected,
 } from "../scene";
 import { hasStrokeColor } from "../scene/comparisons";
-import { arrayToMap } from "../utils";
+import { arrayToMap, getShortcutKey } from "../utils";
 import { register } from "./register";
 
 const FONT_SIZE_RELATIVE_INCREASE_STEP = 0.1;
 
-const changeProperty = (
+export const changeProperty = (
   elements: readonly ExcalidrawElement[],
   appState: AppState,
   callback: (element: ExcalidrawElement) => ExcalidrawElement,
   includeBoundText = false,
 ) => {
   const selectedElementIds = arrayToMap(
-    getSelectedElements(elements, appState, includeBoundText),
+    getSelectedElements(elements, appState, {
+      includeBoundTextElement: includeBoundText,
+    }),
   );
+
   return elements.map((element) => {
     if (
       selectedElementIds.get(element.id) ||
@@ -101,25 +118,44 @@ const changeProperty = (
   });
 };
 
-const getFormValue = function <T>(
+export const getFormValue = function <T extends Primitive>(
   elements: readonly ExcalidrawElement[],
   appState: AppState,
   getAttribute: (element: ExcalidrawElement) => T,
-  defaultValue?: T,
-): T | null {
+  isRelevantElement: true | ((element: ExcalidrawElement) => boolean),
+  defaultValue: T | ((isSomeElementSelected: boolean) => T),
+): T {
   const editingElement = appState.editingElement;
   const nonDeletedElements = getNonDeletedElements(elements);
-  return (
-    (editingElement && getAttribute(editingElement)) ??
-    (isSomeElementSelected(nonDeletedElements, appState)
-      ? getCommonAttributeOfSelectedElements(
-          nonDeletedElements,
+
+  let ret: T | null = null;
+
+  if (editingElement) {
+    ret = getAttribute(editingElement);
+  }
+
+  if (!ret) {
+    const hasSelection = isSomeElementSelected(nonDeletedElements, appState);
+
+    if (hasSelection) {
+      ret =
+        getCommonAttributeOfSelectedElements(
+          isRelevantElement === true
+            ? nonDeletedElements
+            : nonDeletedElements.filter((el) => isRelevantElement(el)),
           appState,
           getAttribute,
-        )
-      : defaultValue) ??
-    null
-  );
+        ) ??
+        (typeof defaultValue === "function"
+          ? defaultValue(true)
+          : defaultValue);
+    } else {
+      ret =
+        typeof defaultValue === "function" ? defaultValue(false) : defaultValue;
+    }
+  }
+
+  return ret;
 };
 
 const offsetElementAfterFontResize = (
@@ -218,25 +254,25 @@ export const actionChangeStrokeColor = register({
       commitToHistory: !!value.currentItemStrokeColor,
     };
   },
-  PanelComponent: ({ elements, appState, updateData }) => (
+  PanelComponent: ({ elements, appState, updateData, appProps }) => (
     <>
       <h3 aria-hidden="true">{t("labels.stroke")}</h3>
       <ColorPicker
+        topPicks={DEFAULT_ELEMENT_STROKE_PICKS}
+        palette={DEFAULT_ELEMENT_STROKE_COLOR_PALETTE}
         type="elementStroke"
         label={t("labels.stroke")}
         color={getFormValue(
           elements,
           appState,
           (element) => element.strokeColor,
+          true,
           appState.currentItemStrokeColor,
         )}
         onChange={(color) => updateData({ currentItemStrokeColor: color })}
-        isActive={appState.openPopup === "strokeColorPicker"}
-        setActive={(active) =>
-          updateData({ openPopup: active ? "strokeColorPicker" : null })
-        }
         elements={elements}
         appState={appState}
+        updateData={updateData}
       />
     </>
   ),
@@ -261,25 +297,25 @@ export const actionChangeBackgroundColor = register({
       commitToHistory: !!value.currentItemBackgroundColor,
     };
   },
-  PanelComponent: ({ elements, appState, updateData }) => (
+  PanelComponent: ({ elements, appState, updateData, appProps }) => (
     <>
       <h3 aria-hidden="true">{t("labels.background")}</h3>
       <ColorPicker
+        topPicks={DEFAULT_ELEMENT_BACKGROUND_PICKS}
+        palette={DEFAULT_ELEMENT_BACKGROUND_COLOR_PALETTE}
         type="elementBackground"
         label={t("labels.background")}
         color={getFormValue(
           elements,
           appState,
           (element) => element.backgroundColor,
+          true,
           appState.currentItemBackgroundColor,
         )}
         onChange={(color) => updateData({ currentItemBackgroundColor: color })}
-        isActive={appState.openPopup === "backgroundColorPicker"}
-        setActive={(active) =>
-          updateData({ openPopup: active ? "backgroundColorPicker" : null })
-        }
         elements={elements}
         appState={appState}
+        updateData={updateData}
       />
     </>
   ),
@@ -288,7 +324,12 @@ export const actionChangeBackgroundColor = register({
 export const actionChangeFillStyle = register({
   name: "changeFillStyle",
   trackEvent: false,
-  perform: (elements, appState, value) => {
+  perform: (elements, appState, value, app) => {
+    trackEvent(
+      "element",
+      "changeFillStyle",
+      `${value} (${app.device.editor.isMobile ? "mobile" : "desktop"})`,
+    );
     return {
       elements: changeProperty(elements, appState, (el) =>
         newElementWith(el, {
@@ -299,40 +340,62 @@ export const actionChangeFillStyle = register({
       commitToHistory: true,
     };
   },
-  PanelComponent: ({ elements, appState, updateData }) => (
-    <fieldset>
-      <legend>{t("labels.fill")}</legend>
-      <ButtonIconSelect
-        options={[
-          {
-            value: "hachure",
-            text: t("labels.hachure"),
-            icon: <FillHachureIcon theme={appState.theme} />,
-          },
-          {
-            value: "cross-hatch",
-            text: t("labels.crossHatch"),
-            icon: <FillCrossHatchIcon theme={appState.theme} />,
-          },
-          {
-            value: "solid",
-            text: t("labels.solid"),
-            icon: <FillSolidIcon theme={appState.theme} />,
-          },
-        ]}
-        group="fill"
-        value={getFormValue(
-          elements,
-          appState,
-          (element) => element.fillStyle,
-          appState.currentItemFillStyle,
-        )}
-        onChange={(value) => {
-          updateData(value);
-        }}
-      />
-    </fieldset>
-  ),
+  PanelComponent: ({ elements, appState, updateData }) => {
+    const selectedElements = getSelectedElements(elements, appState);
+    const allElementsZigZag =
+      selectedElements.length > 0 &&
+      selectedElements.every((el) => el.fillStyle === "zigzag");
+
+    return (
+      <fieldset>
+        <legend>{t("labels.fill")}</legend>
+        <ButtonIconSelect
+          type="button"
+          options={[
+            {
+              value: "hachure",
+              text: `${
+                allElementsZigZag ? t("labels.zigzag") : t("labels.hachure")
+              } (${getShortcutKey("Alt-Click")})`,
+              icon: allElementsZigZag ? FillZigZagIcon : FillHachureIcon,
+              active: allElementsZigZag ? true : undefined,
+              testId: `fill-hachure`,
+            },
+            {
+              value: "cross-hatch",
+              text: t("labels.crossHatch"),
+              icon: FillCrossHatchIcon,
+              testId: `fill-cross-hatch`,
+            },
+            {
+              value: "solid",
+              text: t("labels.solid"),
+              icon: FillSolidIcon,
+              testId: `fill-solid`,
+            },
+          ]}
+          value={getFormValue(
+            elements,
+            appState,
+            (element) => element.fillStyle,
+            (element) => element.hasOwnProperty("fillStyle"),
+            (hasSelection) =>
+              hasSelection ? null : appState.currentItemFillStyle,
+          )}
+          onClick={(value, event) => {
+            const nextValue =
+              event.altKey &&
+              value === "hachure" &&
+              selectedElements.every((el) => el.fillStyle === "hachure")
+                ? "zigzag"
+                : value;
+
+            updateData(nextValue);
+          }}
+        />
+      </fieldset>
+    );
+  },
 });
 
 export const actionChangeStrokeWidth = register({
@@ -356,26 +419,31 @@ export const actionChangeStrokeWidth = register({
         group="stroke-width"
         options={[
           {
-            value: 1,
+            value: STROKE_WIDTH.thin,
             text: t("labels.thin"),
-            icon: <StrokeWidthIcon theme={appState.theme} strokeWidth={2} />,
+            icon: StrokeWidthBaseIcon,
+            testId: "strokeWidth-thin",
           },
           {
-            value: 2,
+            value: STROKE_WIDTH.bold,
             text: t("labels.bold"),
-            icon: <StrokeWidthIcon theme={appState.theme} strokeWidth={6} />,
+            icon: StrokeWidthBoldIcon,
+            testId: "strokeWidth-bold",
           },
           {
-            value: 4,
+            value: STROKE_WIDTH.extraBold,
             text: t("labels.extraBold"),
-            icon: <StrokeWidthIcon theme={appState.theme} strokeWidth={10} />,
+            icon: StrokeWidthExtraBoldIcon,
+            testId: "strokeWidth-extraBold",
           },
         ]}
         value={getFormValue(
           elements,
           appState,
           (element) => element.strokeWidth,
-          appState.currentItemStrokeWidth,
+          (element) => element.hasOwnProperty("strokeWidth"),
+          (hasSelection) =>
+            hasSelection ? null : appState.currentItemStrokeWidth,
         )}
         onChange={(value) => updateData(value)}
       />
@@ -407,24 +475,26 @@ export const actionChangeSloppiness = register({
           {
             value: 0,
             text: t("labels.architect"),
-            icon: <SloppinessArchitectIcon theme={appState.theme} />,
+            icon: SloppinessArchitectIcon,
           },
           {
             value: 1,
             text: t("labels.artist"),
-            icon: <SloppinessArtistIcon theme={appState.theme} />,
+            icon: SloppinessArtistIcon,
           },
           {
             value: 2,
             text: t("labels.cartoonist"),
-            icon: <SloppinessCartoonistIcon theme={appState.theme} />,
+            icon: SloppinessCartoonistIcon,
           },
         ]}
         value={getFormValue(
           elements,
           appState,
           (element) => element.roughness,
-          appState.currentItemRoughness,
+          (element) => element.hasOwnProperty("roughness"),
+          (hasSelection) =>
+            hasSelection ? null : appState.currentItemRoughness,
         )}
         onChange={(value) => updateData(value)}
       />
@@ -455,24 +525,26 @@ export const actionChangeStrokeStyle = register({
           {
             value: "solid",
             text: t("labels.strokeStyle_solid"),
-            icon: <StrokeStyleSolidIcon theme={appState.theme} />,
+            icon: StrokeWidthBaseIcon,
           },
           {
             value: "dashed",
             text: t("labels.strokeStyle_dashed"),
-            icon: <StrokeStyleDashedIcon theme={appState.theme} />,
+            icon: StrokeStyleDashedIcon,
           },
           {
             value: "dotted",
             text: t("labels.strokeStyle_dotted"),
-            icon: <StrokeStyleDottedIcon theme={appState.theme} />,
+            icon: StrokeStyleDottedIcon,
           },
         ]}
         value={getFormValue(
           elements,
           appState,
           (element) => element.strokeStyle,
-          appState.currentItemStrokeStyle,
+          (element) => element.hasOwnProperty("strokeStyle"),
+          (hasSelection) =>
+            hasSelection ? null : appState.currentItemStrokeStyle,
         )}
         onChange={(value) => updateData(value)}
       />
@@ -512,6 +584,7 @@ export const actionChangeOpacity = register({
             elements,
             appState,
             (element) => element.opacity,
+            true,
             appState.currentItemOpacity,
           ) ?? undefined
         }
@@ -535,25 +608,25 @@ export const actionChangeFontSize = register({
           {
             value: 16,
             text: t("labels.small"),
-            icon: <FontSizeSmallIcon theme={appState.theme} />,
+            icon: FontSizeSmallIcon,
             testId: "fontSize-small",
           },
           {
             value: 20,
             text: t("labels.medium"),
-            icon: <FontSizeMediumIcon theme={appState.theme} />,
+            icon: FontSizeMediumIcon,
             testId: "fontSize-medium",
           },
           {
             value: 28,
             text: t("labels.large"),
-            icon: <FontSizeLargeIcon theme={appState.theme} />,
+            icon: FontSizeLargeIcon,
             testId: "fontSize-large",
           },
           {
             value: 36,
             text: t("labels.veryLarge"),
-            icon: <FontSizeExtraLargeIcon theme={appState.theme} />,
+            icon: FontSizeExtraLargeIcon,
             testId: "fontSize-veryLarge",
           },
         ]}
@@ -570,7 +643,12 @@ export const actionChangeFontSize = register({
             }
             return null;
           },
-          appState.currentItemFontSize || DEFAULT_FONT_SIZE,
+          (element) =>
+            isTextElement(element) || getBoundTextElement(element) !== null,
+          (hasSelection) =>
+            hasSelection
+              ? null
+              : appState.currentItemFontSize || DEFAULT_FONT_SIZE,
         )}
         onChange={(value) => updateData(value)}
       />
@@ -632,6 +710,7 @@ export const actionChangeFontFamily = register({
               oldElement,
               {
                 fontFamily: value,
+                lineHeight: getDefaultLineHeight(value),
               },
             );
             redrawTextBoundingBox(newElement, getContainerElement(oldElement));
@@ -654,21 +733,25 @@ export const actionChangeFontFamily = register({
       value: FontFamilyValues;
       text: string;
       icon: JSX.Element;
+      testId: string;
     }[] = [
       {
         value: FONT_FAMILY.Virgil,
         text: t("labels.handDrawn"),
-        icon: <FontFamilyHandDrawnIcon theme={appState.theme} />,
+        icon: FreedrawIcon,
+        testId: "font-family-virgil",
       },
       {
         value: FONT_FAMILY.Helvetica,
         text: t("labels.normal"),
-        icon: <FontFamilyNormalIcon theme={appState.theme} />,
+        icon: FontFamilyNormalIcon,
+        testId: "font-family-normal",
       },
       {
         value: FONT_FAMILY.Cascadia,
         text: t("labels.code"),
-        icon: <FontFamilyCodeIcon theme={appState.theme} />,
+        icon: FontFamilyCodeIcon,
+        testId: "font-family-code",
       },
     ];
 
@@ -691,7 +774,12 @@ export const actionChangeFontFamily = register({
               }
               return null;
             },
-            appState.currentItemFontFamily || DEFAULT_FONT_FAMILY,
+            (element) =>
+              isTextElement(element) || getBoundTextElement(element) !== null,
+            (hasSelection) =>
+              hasSelection
+                ? null
+                : appState.currentItemFontFamily || DEFAULT_FONT_FAMILY,
           )}
           onChange={(value) => updateData(value)}
         />
@@ -739,17 +827,20 @@ export const actionChangeTextAlign = register({
             {
               value: "left",
               text: t("labels.left"),
-              icon: <TextAlignLeftIcon theme={appState.theme} />,
+              icon: TextAlignLeftIcon,
+              testId: "align-left",
             },
             {
               value: "center",
               text: t("labels.center"),
-              icon: <TextAlignCenterIcon theme={appState.theme} />,
+              icon: TextAlignCenterIcon,
+              testId: "align-horizontal-center",
             },
             {
               value: "right",
               text: t("labels.right"),
-              icon: <TextAlignRightIcon theme={appState.theme} />,
+              icon: TextAlignRightIcon,
+              testId: "align-right",
             },
           ]}
           value={getFormValue(
@@ -765,7 +856,10 @@ export const actionChangeTextAlign = register({
               }
               return null;
             },
-            appState.currentItemTextAlign,
+            (element) =>
+              isTextElement(element) || getBoundTextElement(element) !== null,
+            (hasSelection) =>
+              hasSelection ? null : appState.currentItemTextAlign,
           )}
           onChange={(value) => updateData(value)}
         />
@@ -773,6 +867,7 @@ export const actionChangeTextAlign = register({
     );
   },
 });
+
 export const actionChangeVerticalAlign = register({
   name: "changeVerticalAlign",
   trackEvent: { category: "element" },
@@ -812,28 +907,38 @@ export const actionChangeVerticalAlign = register({
               value: VERTICAL_ALIGN.TOP,
               text: t("labels.alignTop"),
               icon: <TextAlignTopIcon theme={appState.theme} />,
+              testId: "align-top",
             },
             {
               value: VERTICAL_ALIGN.MIDDLE,
               text: t("labels.centerVertically"),
               icon: <TextAlignMiddleIcon theme={appState.theme} />,
+              testId: "align-middle",
             },
             {
               value: VERTICAL_ALIGN.BOTTOM,
               text: t("labels.alignBottom"),
               icon: <TextAlignBottomIcon theme={appState.theme} />,
+              testId: "align-bottom",
             },
           ]}
-          value={getFormValue(elements, appState, (element) => {
-            if (isTextElement(element) && element.containerId) {
-              return element.verticalAlign;
-            }
-            const boundTextElement = getBoundTextElement(element);
-            if (boundTextElement) {
-              return boundTextElement.verticalAlign;
-            }
-            return null;
-          })}
+          value={getFormValue(
+            elements,
+            appState,
+            (element) => {
+              if (isTextElement(element) && element.containerId) {
+                return element.verticalAlign;
+              }
+              const boundTextElement = getBoundTextElement(element);
+              if (boundTextElement) {
+                return boundTextElement.verticalAlign;
+              }
+              return null;
+            },
+            (element) =>
+              isTextElement(element) || getBoundTextElement(element) !== null,
+            (hasSelection) => (hasSelection ? null : VERTICAL_ALIGN.MIDDLE),
+          )}
           onChange={(value) => updateData(value)}
         />
       </fieldset>
@@ -841,69 +946,71 @@ export const actionChangeVerticalAlign = register({
   },
 });
 
-export const actionChangeSharpness = register({
-  name: "changeSharpness",
+export const actionChangeRoundness = register({
+  name: "changeRoundness",
   trackEvent: false,
   perform: (elements, appState, value) => {
-    const targetElements = getTargetElements(
-      getNonDeletedElements(elements),
-      appState,
-    );
-    const shouldUpdateForNonLinearElements = targetElements.length
-      ? targetElements.every((el) => !isLinearElement(el))
-      : !isLinearElementType(appState.activeTool.type);
-    const shouldUpdateForLinearElements = targetElements.length
-      ? targetElements.every(isLinearElement)
-      : isLinearElementType(appState.activeTool.type);
     return {
       elements: changeProperty(elements, appState, (el) =>
         newElementWith(el, {
-          strokeSharpness: value,
+          roundness:
+            value === "round"
+              ? {
+                  type: isUsingAdaptiveRadius(el.type)
+                    ? ROUNDNESS.ADAPTIVE_RADIUS
+                    : ROUNDNESS.PROPORTIONAL_RADIUS,
+                }
+              : null,
         }),
       ),
       appState: {
         ...appState,
-        currentItemStrokeSharpness: shouldUpdateForNonLinearElements
-          ? value
-          : appState.currentItemStrokeSharpness,
-        currentItemLinearStrokeSharpness: shouldUpdateForLinearElements
-          ? value
-          : appState.currentItemLinearStrokeSharpness,
+        currentItemRoundness: value,
       },
       commitToHistory: true,
     };
   },
-  PanelComponent: ({ elements, appState, updateData }) => (
-    <fieldset>
-      <legend>{t("labels.edges")}</legend>
-      <ButtonIconSelect
-        group="edges"
-        options={[
-          {
-            value: "sharp",
-            text: t("labels.sharp"),
-            icon: <EdgeSharpIcon theme={appState.theme} />,
-          },
-          {
-            value: "round",
-            text: t("labels.round"),
-            icon: <EdgeRoundIcon theme={appState.theme} />,
-          },
-        ]}
-        value={getFormValue(
-          elements,
-          appState,
-          (element) => element.strokeSharpness,
-          (canChangeSharpness(appState.activeTool.type) &&
-            (isLinearElementType(appState.activeTool.type)
-              ? appState.currentItemLinearStrokeSharpness
-              : appState.currentItemStrokeSharpness)) ||
-            null,
-        )}
-        onChange={(value) => updateData(value)}
-      />
-    </fieldset>
-  ),
+  PanelComponent: ({ elements, appState, updateData }) => {
+    const targetElements = getTargetElements(
+      getNonDeletedElements(elements),
+      appState,
+    );
+
+    const hasLegacyRoundness = targetElements.some(
+      (el) => el.roundness?.type === ROUNDNESS.LEGACY,
+    );
+
+    return (
+      <fieldset>
+        <legend>{t("labels.edges")}</legend>
+        <ButtonIconSelect
+          group="edges"
+          options={[
+            {
+              value: "sharp",
+              text: t("labels.sharp"),
+              icon: EdgeSharpIcon,
+            },
+            {
+              value: "round",
+              text: t("labels.round"),
+              icon: EdgeRoundIcon,
+            },
+          ]}
+          value={getFormValue(
+            elements,
+            appState,
+            (element) =>
+              hasLegacyRoundness ? null : element.roundness ? "round" : "sharp",
+            (element) => element.hasOwnProperty("roundness"),
+            (hasSelection) =>
+              hasSelection ? null : appState.currentItemRoundness,
+          )}
+          onChange={(value) => updateData(value)}
+        />
+      </fieldset>
+    );
+  },
 });
 
 export const actionChangeArrowhead = register({
@@ -949,42 +1056,38 @@ export const actionChangeArrowhead = register({
     return (
       <fieldset>
         <legend>{t("labels.arrowheads")}</legend>
-        <div className="iconSelectList">
+        <div className="iconSelectList buttonList">
           <IconPicker
             label="arrowhead_start"
             options={[
               {
                 value: null,
                 text: t("labels.arrowhead_none"),
-                icon: <ArrowheadNoneIcon theme={appState.theme} />,
+                icon: ArrowheadNoneIcon,
                 keyBinding: "q",
               },
               {
                 value: "arrow",
                 text: t("labels.arrowhead_arrow"),
-                icon: (
-                  <ArrowheadArrowIcon theme={appState.theme} flip={!isRTL} />
-                ),
+                icon: <ArrowheadArrowIcon flip={!isRTL} />,
                 keyBinding: "w",
               },
               {
                 value: "bar",
                 text: t("labels.arrowhead_bar"),
-                icon: <ArrowheadBarIcon theme={appState.theme} flip={!isRTL} />,
+                icon: <ArrowheadBarIcon flip={!isRTL} />,
                 keyBinding: "e",
               },
               {
                 value: "dot",
                 text: t("labels.arrowhead_dot"),
-                icon: <ArrowheadDotIcon theme={appState.theme} flip={!isRTL} />,
+                icon: <ArrowheadDotIcon flip={!isRTL} />,
                 keyBinding: "r",
               },
               {
                 value: "triangle",
                 text: t("labels.arrowhead_triangle"),
-                icon: (
-                  <ArrowheadTriangleIcon theme={appState.theme} flip={!isRTL} />
-                ),
+                icon: <ArrowheadTriangleIcon flip={!isRTL} />,
                 keyBinding: "t",
               },
             ]}
@@ -995,6 +1098,7 @@ export const actionChangeArrowhead = register({
                 isLinearElement(element) && canHaveArrowheads(element.type)
                   ? element.startArrowhead
                   : appState.currentItemStartArrowhead,
+              true,
               appState.currentItemStartArrowhead,
             )}
             onChange={(value) => updateData({ position: "start", type: value })}
@@ -1007,34 +1111,30 @@ export const actionChangeArrowhead = register({
                 value: null,
                 text: t("labels.arrowhead_none"),
                 keyBinding: "q",
-                icon: <ArrowheadNoneIcon theme={appState.theme} />,
+                icon: ArrowheadNoneIcon,
               },
               {
                 value: "arrow",
                 text: t("labels.arrowhead_arrow"),
                 keyBinding: "w",
-                icon: (
-                  <ArrowheadArrowIcon theme={appState.theme} flip={isRTL} />
-                ),
+                icon: <ArrowheadArrowIcon flip={isRTL} />,
               },
               {
                 value: "bar",
                 text: t("labels.arrowhead_bar"),
                 keyBinding: "e",
-                icon: <ArrowheadBarIcon theme={appState.theme} flip={isRTL} />,
+                icon: <ArrowheadBarIcon flip={isRTL} />,
               },
               {
                 value: "dot",
                 text: t("labels.arrowhead_dot"),
                 keyBinding: "r",
-                icon: <ArrowheadDotIcon theme={appState.theme} flip={isRTL} />,
+                icon: <ArrowheadDotIcon flip={isRTL} />,
               },
               {
                 value: "triangle",
                 text: t("labels.arrowhead_triangle"),
-                icon: (
-                  <ArrowheadTriangleIcon theme={appState.theme} flip={isRTL} />
-                ),
+                icon: <ArrowheadTriangleIcon flip={isRTL} />,
                 keyBinding: "t",
               },
             ]}
@@ -1045,6 +1145,7 @@ export const actionChangeArrowhead = register({
                 isLinearElement(element) && canHaveArrowheads(element.type)
                   ? element.endArrowhead
                   : appState.currentItemEndArrowhead,
+              true,
               appState.currentItemEndArrowhead,
             )}
             onChange={(value) => updateData({ position: "end", type: value })}
